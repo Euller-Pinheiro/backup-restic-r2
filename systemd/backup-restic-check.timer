@@ -1,0 +1,12 @@
+[Unit]
+Description=Verificação semanal do repositório restic
+
+[Timer]
+# Domingo 08:00 UTC (05:00 em Brasília). Com vários servidores no mesmo
+# armazenamento, escalone os horários para não verificarem ao mesmo tempo.
+OnCalendar=Sun *-*-* 08:00:00 UTC
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Verificação do repositório restic
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/backup-check.sh
+Nice=15
+IOSchedulingClass=idle

@@ -1,0 +1,22 @@
+name: Testes
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  testes:
+    name: Ciclo completo (restic local)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependências
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q restic sqlite3 shellcheck
+          restic version
+      - name: ShellCheck
+        run: shellcheck -S warning bin/*.sh install.sh tests/test.sh
+      - name: Teste de ponta a ponta
+        run: ./tests/test.sh

@@ -1,0 +1,12 @@
+[Unit]
+Description=Backup restic diário
+
+[Timer]
+# 06:20 UTC = 03:20 em Brasília. O sufixo UTC evita surpresa se o fuso do
+# servidor for diferente do seu (é comum servidores em nuvem rodarem em UTC).
+OnCalendar=*-*-* 06:20:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

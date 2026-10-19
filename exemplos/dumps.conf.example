@@ -1,0 +1,8 @@
+# /etc/backup-restic/dumps.conf — um banco por linha
+#
+# tipo      nome         alvo                        [args extras]
+sqlite      app1         /opt/app1/db.sqlite3
+sqlite      vaultwarden  /opt/vaultwarden/data/db.sqlite3
+mysql       erp          erp_producao
+mysql       zabbix       zabbix  --ignore-table=zabbix.history --ignore-table=zabbix.trends --ignore-table=zabbix.auditlog
+postgres    site         site_producao

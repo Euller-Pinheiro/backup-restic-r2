@@ -1,0 +1,10 @@
+# /etc/backup-restic/excludes — padrões que NÃO entram no backup
+# Os bancos ao vivo ficam de fora: o que vale é o dump consistente gerado antes.
+/opt/*/db.sqlite3*
+/opt/vaultwarden/data/db.sqlite3*
+/var/lib/mysql
+/var/lib/postgresql
+*/__pycache__
+*.pyc
+*/node_modules
+*/.cache
