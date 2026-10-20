@@ -7,7 +7,7 @@
 
 **[English below](#english)**
 
-Kit de backup para servidores Linux. Exporta os bancos de dados de forma consistente, cifra tudo com o [restic](https://restic.net), guarda no **Cloudflare R2** (ou em qualquer S3, B2, SFTP ou disco local), aplica retenção, verifica o repositório toda semana e **avisa no Zabbix** quando o backup para.
+Kit de backup para servidores Linux. Exporta os bancos de dados de forma consistente, cifra tudo com o [restic](https://restic.net), guarda no **Cloudflare R2** (ou em qualquer S3, B2, SFTP ou disco local), aplica retenção, verifica o repositório toda semana e **avisa no Zabbix e no Telegram** quando o backup para.
 
 É a versão aberta do que eu uso em produção nos servidores da [ESX Tecnologia](https://esxtecnologia.com). O kit protege ERP, cofre de senhas, helpdesk e sites, e cada servidor ocupa uma fração dos 10 GB gratuitos do R2.
 
@@ -23,6 +23,7 @@ Kit de backup para servidores Linux. Exporta os bancos de dados de forma consist
 | O armazenamento corrompe em silêncio | Verificação semanal com `restic check --read-data-subset=10%`, sobre uma amostra diferente a cada vez. |
 | O servidor roda em UTC e o horário "03:00" vira meia-noite | Os timers do systemd usam o sufixo `UTC` explícito. |
 | Dois backups ao mesmo tempo | Trava com `flock`. A segunda execução sai sem fazer nada. |
+| Quem não usa Zabbix só descobre a falha quando precisa restaurar | Aviso opcional pelo **Telegram** na falha e quando o backup volta ao normal. |
 
 ## O que vem no kit
 
@@ -31,6 +32,7 @@ bin/backup-dumps.sh          dumps consistentes (sqlite, mysql, postgres)
 bin/backup-run.sh            ciclo: dumps -> restic backup -> retenção -> marca de sucesso
 bin/backup-check.sh          verificação do repositório
 bin/backup-restore-test.sh   restaura e confere os dumps do último snapshot
+bin/backup-notify.sh         aviso pelo Telegram (falha, volta ao normal, teste)
 systemd/                     timers diário (backup) e semanal (verificação)
 zabbix/backup-restic.conf    itens backup.restic.age e backup.restic.check.age
 exemplos/                    backup.env, dumps.conf, excludes
@@ -72,6 +74,41 @@ O `install.sh` copia `zabbix/backup-restic.conf` para a pasta do agente. Reinici
 - **Trigger:** `last(/SEU-HOST/backup.restic.age)>129600`, ou seja, 36 horas sem backup bem-sucedido.
 - (Opcional) Faça o mesmo com `backup.restic.check.age` e o limite de 8 dias.
 
+### Aviso pelo Telegram (opcional)
+
+O Zabbix percebe quando o backup **para de acontecer**. O Telegram avisa **na hora** em que uma etapa falha, e de novo quando o backup volta a funcionar. Os dois se completam: se o servidor desligar, nenhum script roda para avisar, e aí só o Zabbix pega.
+
+1. No Telegram, fale com o **@BotFather**, mande `/newbot` e copie o token.
+2. Mande uma mensagem qualquer para o bot, ou adicione-o ao grupo da equipe.
+3. Abra `https://api.telegram.org/bot<TOKEN>/getUpdates` e anote o `"chat":{"id":...}`. Grupos têm id negativo.
+4. Preencha no `/etc/backup-restic/backup.env`:
+   ```bash
+   TELEGRAM_BOT_TOKEN=123456789:AAE...
+   TELEGRAM_CHAT_ID=-1001234567890
+   NOTIFY_ON=falha        # falha (padrão) | sempre | desligado
+   ```
+5. Teste: `sudo backup-notify.sh teste "funcionou"`
+
+Um aviso de falha chega assim:
+
+```
+❌ Backup com FALHA — web01
+FALHA nos dumps — backup NÃO marcado como sucesso
+Veja: tail -50 /var/log/backup-restic.log
+2026-10-20 06:20:14 UTC
+```
+
+**Decisões de projeto, e por quê:**
+
+| Decisão | Motivo |
+|---|---|
+| Padrão `NOTIFY_ON=falha`, sem "deu tudo certo" diário | Mensagem que chega todo dia igual acostuma a pessoa a não ler o canal. Quando a falha vier, ela passa despercebida. |
+| Aviso de **volta ao normal**, uma vez só | Quem recebeu a falha precisa saber que pode parar de se preocupar, sem ter que entrar no servidor. Uma marca em `/var/lib/backup-restic/backup-falhou` lembra que houve falha. |
+| O token vai para o `curl` pela entrada padrão (`curl -K -`) | Na linha de comando, o token apareceria no `ps` para qualquer usuário do servidor. Se ele surgir numa mensagem de erro, é trocado por `<token>` antes de ir para o log. |
+| Token e chat validados por expressão regular | Um valor com aspas ou espaço não consegue alterar a configuração passada ao `curl`. |
+| Tempo máximo de 20 s e erro de envio ignorado | O Telegram fora do ar nunca pode travar nem derrubar o backup. O erro fica registrado no log. |
+| Texto puro, sem Markdown | Nada na mensagem precisa ser escapado, então um nome de arquivo com `_` ou `*` não quebra o envio. |
+
 ## Restaurar
 
 ```bash
@@ -91,7 +128,8 @@ restic restore latest --target /tmp/restaurado --include /opt/app1
 - a retenção;
 - que **banco ausente ou corrompido não vira sucesso**, sem apagar o dump bom anterior;
 - a trava contra execução dupla;
-- os itens do Zabbix.
+- os itens do Zabbix;
+- o **aviso pelo Telegram**, contra um servidor falso local ([`tests/telegram_falso.py`](tests/telegram_falso.py)): falha, volta ao normal, `NOTIFY_ON`, Telegram fora do ar e o token fora do log.
 
 O GitHub Actions roda os testes e o ShellCheck a cada push.
 
@@ -111,6 +149,8 @@ Quer backup monitorado nos servidores da sua empresa sem ter que pensar nisso? [
 ## English
 
 A backup kit for Linux servers. It takes consistent database dumps (SQLite `.backup` with an integrity check, `mysqldump --single-transaction`, `pg_dump -Fc`), runs an encrypted [restic](https://restic.net) backup to **Cloudflare R2** (or any restic backend), applies retention, verifies the repository weekly and exposes **Zabbix** items, so you get an alert when backups stop.
+
+Optional **Telegram** alerts are sent when any step fails and once when backups recover (`NOTIFY_ON=falha|sempre|desligado`). The bot token is passed to `curl` through stdin, so it never shows up in `ps`, and a Telegram outage never breaks the backup.
 
 A failed dump never overwrites the last good one, and never counts as success. `backup-restore-test.sh` proves that your backup actually restores. Fully tested in CI against a local repository.
 
