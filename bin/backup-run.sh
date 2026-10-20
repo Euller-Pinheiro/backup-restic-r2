@@ -33,6 +33,19 @@ export DUMP_DIR LOG_FILE
 
 log() { printf '%s [backup] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE" >&2; }
 
+# Aviso pelo Telegram (opcional). Uma falha no envio nunca muda o resultado do backup.
+avisar() { "$AQUI/backup-notify.sh" "$@" || true; }
+
+# Registra a falha, avisa e sai com erro, sem gravar a marca de sucesso.
+# A marca backup-falhou permite avisar quando o backup volta a funcionar.
+falhar() {
+    log "$1"
+    touch "$STATE_DIR/backup-falhou"
+    avisar falha "$1
+Veja: tail -50 $LOG_FILE"
+    exit 1
+}
+
 mkdir -p "$STATE_DIR"
 exec 9>"$STATE_DIR/.lock"
 if ! flock -n 9; then log "outro backup em andamento; saindo"; exit 3; fi
@@ -42,14 +55,13 @@ log "===== início ====="
 
 # 1) Dumps
 if ! "$AQUI/backup-dumps.sh"; then
-    log "FALHA nos dumps — backup NÃO marcado como sucesso"
-    exit 1
+    falhar "FALHA nos dumps — backup NÃO marcado como sucesso"
 fi
 
 # 2) Repositório: cria na primeira vez
 if ! "$RESTIC" cat config >/dev/null 2>&1; then
     log "repositório não inicializado; criando"
-    "$RESTIC" init >>"$LOG_FILE" 2>&1 || { log "FALHA ao criar o repositório"; exit 1; }
+    "$RESTIC" init >>"$LOG_FILE" 2>&1 || falhar "FALHA ao criar o repositório"
 fi
 
 # 3) Backup
@@ -58,18 +70,25 @@ excl=()
 [[ -f "$EXCLUDES_FILE" ]] && excl=(--exclude-file "$EXCLUDES_FILE")
 if ! "$RESTIC" backup --one-file-system --exclude-caches "${excl[@]}" --tag auto \
         "$DUMP_DIR" "${caminhos[@]}" >>"$LOG_FILE" 2>&1; then
-    log "FALHA no restic backup"
-    exit 1
+    falhar "FALHA no restic backup"
 fi
 
 # 4) Retenção
 if ! "$RESTIC" forget --tag auto --prune \
         --keep-last "$KEEP_LAST" --keep-daily "$KEEP_DAILY" \
         --keep-weekly "$KEEP_WEEKLY" --keep-monthly "$KEEP_MONTHLY" >>"$LOG_FILE" 2>&1; then
-    log "FALHA na retenção (forget/prune)"
-    exit 1
+    falhar "FALHA na retenção (forget/prune)"
 fi
 
 # 5) Marca de sucesso (epoch) — o Zabbix alerta se ficar velha
 date +%s > "$STATE_DIR/last-success.tmp" && mv -f "$STATE_DIR/last-success.tmp" "$STATE_DIR/last-success"
-log "===== sucesso em $(( $(date +%s) - inicio ))s ====="
+duracao=$(( $(date +%s) - inicio ))
+log "===== sucesso em ${duracao}s ====="
+
+# 6) Aviso: "voltou a funcionar" depois de uma falha; "concluído" se NOTIFY_ON=sempre
+if [[ -e "$STATE_DIR/backup-falhou" ]]; then
+    rm -f "$STATE_DIR/backup-falhou"
+    avisar recuperado "Backup concluído em ${duracao}s depois de uma falha anterior."
+else
+    avisar sucesso "Backup concluído em ${duracao}s."
+fi

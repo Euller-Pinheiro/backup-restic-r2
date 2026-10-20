@@ -7,6 +7,7 @@ set -uo pipefail
 
 CONF_DIR="${BACKUP_CONF_DIR:-/etc/backup-restic}"
 ENV_FILE="${ENV_FILE:-$CONF_DIR/backup.env}"
+AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ ! -r "$ENV_FILE" ]]; then echo "ERRO: não consigo ler $ENV_FILE" >&2; exit 2; fi
 set -a
 # shellcheck source=/dev/null
@@ -20,15 +21,31 @@ RESTIC="${RESTIC:-restic}"
 
 log() { printf '%s [check] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE" >&2; }
 
+# Aviso pelo Telegram (opcional). Uma falha no envio nunca muda o resultado.
+avisar() { "$AQUI/backup-notify.sh" "$@" || true; }
+
 mkdir -p "$STATE_DIR"
 exec 9>"$STATE_DIR/.lock"
-flock -w 3600 9 || { log "não consegui a trava em 1h; saindo"; exit 3; }
+if ! flock -w 3600 9; then
+    log "não consegui a trava em 1h; saindo"
+    avisar falha "Verificação não rodou: outro processo segurou a trava por mais de 1 h."
+    exit 3
+fi
 
 log "verificando (read-data-subset=$CHECK_SUBSET)"
 if "$RESTIC" check --read-data-subset="$CHECK_SUBSET" >>"$LOG_FILE" 2>&1; then
     date +%s > "$STATE_DIR/last-check"
     log "repositório OK"
+    if [[ -e "$STATE_DIR/check-falhou" ]]; then
+        rm -f "$STATE_DIR/check-falhou"
+        avisar recuperado "Verificação do repositório OK depois de uma falha anterior."
+    else
+        avisar sucesso "Verificação do repositório OK (amostra de $CHECK_SUBSET)."
+    fi
 else
     log "FALHA na verificação do repositório"
+    touch "$STATE_DIR/check-falhou"
+    avisar falha "FALHA na verificação do repositório (restic check)
+Veja: tail -50 $LOG_FILE"
     exit 1
 fi
