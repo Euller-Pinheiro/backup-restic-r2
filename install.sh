@@ -20,6 +20,7 @@ if ! command -v restic >/dev/null; then
     echo "AVISO: restic não encontrado. Instale antes de usar (ex.: apt install restic && restic self-update)."
 fi
 command -v sqlite3 >/dev/null || echo "AVISO: sqlite3 não encontrado (necessário só para bancos SQLite)."
+command -v curl >/dev/null || echo "AVISO: curl não encontrado (necessário só para o aviso pelo Telegram)."
 
 mkdir -p "$BIN" "$CONF" "$UNITS" "$STATE"
 install -m 0755 "$AQUI"/bin/backup-*.sh "$BIN/"
@@ -52,4 +53,6 @@ Instalado. Próximos passos:
   3. Prove que volta:            sudo backup-restore-test.sh
   4. Ative os agendamentos:      sudo systemctl enable --now backup-restic.timer backup-restic-check.timer
   5. No Zabbix, crie o item backup.restic.age e o alerta (veja o README).
+  6. (Opcional) Aviso pelo Telegram: preencha TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID
+     no backup.env e teste com:  sudo backup-notify.sh teste "funcionou"
 EOF
