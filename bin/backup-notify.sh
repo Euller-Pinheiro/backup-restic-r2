@@ -8,6 +8,9 @@
 # Configuração (em backup.env):
 #   TELEGRAM_BOT_TOKEN   token do bot, no formato 123456789:AAE...  (fale com o @BotFather)
 #   TELEGRAM_CHAT_ID     id do chat, grupo ou canal que recebe os avisos
+#   NOTIFY_ON            falha (padrão): avisa falhas e a volta ao normal
+#                        sempre: avisa também cada backup bem-sucedido
+#                        desligado: não avisa nada (o tipo "teste" ainda envia)
 #
 # Sem as duas variáveis, o script não faz nada e sai com 0: o aviso é opcional.
 #
@@ -57,6 +60,17 @@ esac
 if [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]]; then
     exit 0   # aviso não configurado
 fi
+
+# Filtro pelo NOTIFY_ON. O padrão evita o "aviso de tudo certo" diário, que
+# acostuma a pessoa a ignorar o canal; a volta ao normal sempre é avisada,
+# para quem recebeu a falha saber que pode parar de se preocupar.
+case "${NOTIFY_ON:-falha}" in
+    falha)     [[ "$tipo" == sucesso ]] && exit 0 ;;
+    sempre)    ;;
+    desligado) [[ "$tipo" != teste ]] && exit 0 ;;
+    *)         log "NOTIFY_ON inválido (${NOTIFY_ON}); usando 'falha'"
+               [[ "$tipo" == sucesso ]] && exit 0 ;;
+esac
 
 # Valida o formato antes de montar a URL: impede que um valor errado (aspas,
 # espaços, quebra de linha) altere a configuração passada ao curl.

@@ -37,8 +37,10 @@ log() { printf '%s [backup] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "
 avisar() { "$AQUI/backup-notify.sh" "$@" || true; }
 
 # Registra a falha, avisa e sai com erro, sem gravar a marca de sucesso.
+# A marca backup-falhou permite avisar quando o backup volta a funcionar.
 falhar() {
     log "$1"
+    touch "$STATE_DIR/backup-falhou"
     avisar falha "$1
 Veja: tail -50 $LOG_FILE"
     exit 1
@@ -80,4 +82,13 @@ fi
 
 # 5) Marca de sucesso (epoch) — o Zabbix alerta se ficar velha
 date +%s > "$STATE_DIR/last-success.tmp" && mv -f "$STATE_DIR/last-success.tmp" "$STATE_DIR/last-success"
-log "===== sucesso em $(( $(date +%s) - inicio ))s ====="
+duracao=$(( $(date +%s) - inicio ))
+log "===== sucesso em ${duracao}s ====="
+
+# 6) Aviso: "voltou a funcionar" depois de uma falha; "concluído" se NOTIFY_ON=sempre
+if [[ -e "$STATE_DIR/backup-falhou" ]]; then
+    rm -f "$STATE_DIR/backup-falhou"
+    avisar recuperado "Backup concluído em ${duracao}s depois de uma falha anterior."
+else
+    avisar sucesso "Backup concluído em ${duracao}s."
+fi

@@ -36,8 +36,15 @@ log "verificando (read-data-subset=$CHECK_SUBSET)"
 if "$RESTIC" check --read-data-subset="$CHECK_SUBSET" >>"$LOG_FILE" 2>&1; then
     date +%s > "$STATE_DIR/last-check"
     log "repositório OK"
+    if [[ -e "$STATE_DIR/check-falhou" ]]; then
+        rm -f "$STATE_DIR/check-falhou"
+        avisar recuperado "Verificação do repositório OK depois de uma falha anterior."
+    else
+        avisar sucesso "Verificação do repositório OK (amostra de $CHECK_SUBSET)."
+    fi
 else
     log "FALHA na verificação do repositório"
+    touch "$STATE_DIR/check-falhou"
     avisar falha "FALHA na verificação do repositório (restic check)
 Veja: tail -50 $LOG_FILE"
     exit 1
