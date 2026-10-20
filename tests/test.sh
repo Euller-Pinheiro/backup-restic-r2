@@ -116,6 +116,68 @@ ok "backup.restic.age devolve segundos (recente)" '[[ "$idade" =~ ^[0-9]+$ && $i
 cmd2="$(sed -n 's/^UserParameter=backup.restic.age,//p' "$RAIZ_REPO/zabbix/backup-restic.conf" | sed "s#/var/lib/backup-restic#$T/nada#")"
 ok "sem backup nunca feito -> 999999999"  '[[ "$(bash -c "$cmd2")" == 999999999 ]]'
 
+echo "9. Aviso pelo Telegram (servidor falso local)"
+python3 "$RAIZ_REPO/tests/telegram_falso.py" "$T/tg.porta" "$T/tg.pedidos" &
+tg_pid=$!
+trap 'kill "$tg_pid" 2>/dev/null; rm -rf "$T"' EXIT
+for _ in $(seq 50); do [[ -s "$T/tg.porta" ]] && break; sleep 0.1; done
+touch "$T/tg.pedidos"
+backup-run.sh 2>/dev/null   # limpa a marca de falha deixada pela parte 6, ainda sem aviso
+TOKEN_TESTE="123456789:AAE-token_de_teste"
+cp "$CONF/backup.env" "$T/backup.env.sem-aviso"
+cat >> "$CONF/backup.env" <<EOF
+TELEGRAM_API_URL=http://127.0.0.1:$(cat "$T/tg.porta")
+TELEGRAM_BOT_TOKEN=$TOKEN_TESTE
+TELEGRAM_CHAT_ID=-1001234567890
+NOTIFY_HOST=servidor-teste
+EOF
+pedidos() { wc -l < "$T/tg.pedidos"; }
+ultimo()  { tail -n 1 "$T/tg.pedidos" | python3 -c "import json,sys;print(json.load(sys.stdin)[\"$1\"])"; }
+
+n="$(pedidos)"; backup-run.sh 2>/dev/null; rc=$?
+ok "sucesso normal não avisa (NOTIFY_ON=falha)" '[[ $rc -eq 0 && $(pedidos) -eq $n ]]'
+
+echo "sqlite  sumiu  $T/app/nao-existe.sqlite3" >> "$CONF/dumps.conf"
+backup-run.sh 2>/dev/null; rc=$?
+ok "falha nos dumps manda 1 aviso"         '[[ $rc -ne 0 && $(pedidos) -eq $((n + 1)) ]]'
+ok "aviso vai para o bot e o chat certos"  '[[ "$(ultimo caminho)" == "/bot$TOKEN_TESTE/sendMessage" && "$(ultimo chat_id)" == -1001234567890 ]]'
+ok "aviso diz o servidor e a etapa"        'ultimo text | grep -q "FALHA.*servidor-teste" && ultimo text | grep -q "FALHA nos dumps"'
+sed -i '/sumiu/d' "$CONF/dumps.conf"
+
+backup-run.sh 2>/dev/null; rc=$?
+ok "sucesso depois da falha avisa a volta" '[[ $rc -eq 0 && $(pedidos) -eq $((n + 2)) ]] && ultimo text | grep -q "voltou a funcionar"'
+backup-run.sh 2>/dev/null
+ok "a volta ao normal é avisada só 1 vez"  '[[ $(pedidos) -eq $((n + 2)) ]]'
+
+NOTIFY_ON=sempre backup-run.sh 2>/dev/null
+ok "NOTIFY_ON=sempre avisa o sucesso"      '[[ $(pedidos) -eq $((n + 3)) ]] && ultimo text | grep -q "Backup concluído"'
+echo "sqlite  sumiu  $T/app/nao-existe.sqlite3" >> "$CONF/dumps.conf"
+NOTIFY_ON=desligado backup-run.sh 2>/dev/null
+ok "NOTIFY_ON=desligado não avisa a falha" '[[ $(pedidos) -eq $((n + 3)) ]]'
+sed -i '/sumiu/d' "$CONF/dumps.conf"
+backup-run.sh 2>/dev/null
+
+RESTIC=false backup-check.sh 2>/dev/null; rc=$?
+ok "falha na verificação avisa"            '[[ $rc -ne 0 ]] && ultimo text | grep -q "verificação do repositório"'
+backup-check.sh 2>/dev/null
+ok "verificação OK depois da falha avisa"  'ultimo text | grep -q "Verificação do repositório OK depois"'
+
+m="$(pedidos)"
+# Telegram fora do ar: aponta para uma porta fechada (o backup.env é relido a cada execução)
+sed -i 's#^TELEGRAM_API_URL=.*#TELEGRAM_API_URL=http://127.0.0.1:1#' "$CONF/backup.env"
+NOTIFY_ON=sempre backup-run.sh 2>/dev/null; rc=$?
+ok "Telegram fora do ar não derruba o backup" '[[ $rc -eq 0 && -s $T/state/last-success ]]'
+backup-notify.sh teste "x" 2>/dev/null; rc=$?
+ok "envio que falha sai com 1 e é registrado" '[[ $rc -eq 1 ]] && grep -q "aviso pelo Telegram NÃO enviado" "$T/backup.log"'
+ok "token nunca aparece no log"            '! grep -qF "$TOKEN_TESTE" "$T/backup.log"'
+TELEGRAM_BOT_TOKEN='123:abc" -o /tmp/x' TELEGRAM_CHAT_ID=1 backup-notify.sh teste "x" 2>/dev/null; rc=$?
+ok "token com formato inválido é recusado" '[[ $rc -eq 1 && $(pedidos) -eq $m ]]'
+backup-notify.sh 2>/dev/null; rc=$?
+ok "uso sem argumentos sai com 2"          '[[ $rc -eq 2 ]]'
+cp "$T/backup.env.sem-aviso" "$CONF/backup.env"
+env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID backup-notify.sh falha "x"; rc=$?
+ok "sem configuração não envia nada (0)"   '[[ $rc -eq 0 && $(pedidos) -eq $m ]]'
+
 echo
 if (( falhas > 0 )); then echo "$falhas verificação(ões) falharam"; exit 1; fi
 echo "Todos os testes passaram."
