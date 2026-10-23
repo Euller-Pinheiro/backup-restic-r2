@@ -17,7 +17,7 @@ mkdir -p "$T/raiz/etc/zabbix/zabbix_agent2.d"
 RAIZ="$T/raiz" "$RAIZ_REPO/install.sh" > "$T/install2.out"
 CONF="$T/raiz/etc/backup-restic"
 BIN="$T/raiz/usr/local/bin"
-ok "scripts instalados"                 '[[ -x $BIN/backup-run.sh && -x $BIN/backup-dumps.sh && -x $BIN/backup-check.sh && -x $BIN/backup-restore-test.sh ]]'
+ok "scripts instalados"                 '[[ -x $BIN/backup-run.sh && -x $BIN/backup-dumps.sh && -x $BIN/backup-check.sh && -x $BIN/backup-restore-test.sh && -f $BIN/backup-lib.sh ]]'
 ok "senha do repositório gerada (600)"  '[[ -s $CONF/restic-password && $(stat -c %a $CONF/restic-password) == 600 ]]'
 ok "backup.env com permissão 600"       '[[ $(stat -c %a $CONF/backup.env) == 600 ]]'
 ok "reinstalar mantém a configuração"   'grep -q "mantido:  .*backup.env" "$T/install2.out"'

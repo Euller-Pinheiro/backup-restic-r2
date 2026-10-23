@@ -18,6 +18,9 @@ set -a
 . "$ENV_FILE"
 set +a
 DUMP_DIR="${DUMP_DIR:-/var/backups/restic-dumps}"
+AQUI="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=backup-lib.sh
+. "$AQUI/backup-lib.sh"
 RESTIC="${RESTIC:-restic}"
 
 alvo="$(mktemp -d)"
@@ -30,20 +33,10 @@ fi
 
 falhas=0; total=0
 while IFS= read -r -d '' f; do
+    conferir_dump "$f"; rc=$?
+    (( rc == 3 )) && continue          # não é dump (arquivo comum do snapshot)
     total=$((total + 1))
-    case "$f" in
-        *.sqlite3)
-            r="$(sqlite3 "$f" 'PRAGMA integrity_check;' 2>&1)"
-            if [[ "$r" == "ok" ]]; then echo "  ok     $(basename "$f")"; else echo "  FALHA  $(basename "$f"): $r"; falhas=$((falhas + 1)); fi ;;
-        *.sql.gz)
-            if gzip -t "$f" && zcat "$f" | tail -n 3 | grep -q 'Dump completed'; then echo "  ok     $(basename "$f")"
-            else echo "  FALHA  $(basename "$f"): gzip corrompido ou dump incompleto"; falhas=$((falhas + 1)); fi ;;
-        *.dump)
-            if ! command -v pg_restore >/dev/null; then echo "  ?      $(basename "$f") (pg_restore não instalado)"
-            elif pg_restore --list "$f" >/dev/null 2>&1; then echo "  ok     $(basename "$f")"
-            else echo "  FALHA  $(basename "$f"): pg_restore não consegue ler"; falhas=$((falhas + 1)); fi ;;
-        *) total=$((total - 1)) ;;
-    esac
+    (( rc == 1 )) && falhas=$((falhas + 1))
 done < <(find "$alvo" -type f -print0)
 
 if (( total == 0 )); then echo "FALHA: nenhum dump encontrado no snapshot"; exit 1; fi
