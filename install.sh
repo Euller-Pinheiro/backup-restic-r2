@@ -51,6 +51,7 @@ Instalado. Próximos passos:
   1. Edite $CONF/backup.env (R2, caminhos) e $CONF/dumps.conf (bancos).
   2. Rode um backup manual:      sudo backup-run.sh && tail -20 /var/log/backup-restic.log
   3. Prove que volta:            sudo backup-restore-test.sh
+     (no dia em que precisar:   sudo backup-restaurar.sh)
   4. Ative os agendamentos:      sudo systemctl enable --now backup-restic.timer backup-restic-check.timer
   5. No Zabbix, crie o item backup.restic.age e o alerta (veja o README).
   6. (Opcional) Aviso pelo Telegram: preencha TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID
