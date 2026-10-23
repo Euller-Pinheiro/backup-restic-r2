@@ -19,6 +19,7 @@ Kit de backup para servidores Linux. Exporta os bancos de dados de forma consist
 | Um dump falha e substitui o bom de ontem | Cada dump é escrito num arquivo temporário e só substitui o anterior se passar na verificação. |
 | O backup para de rodar e ninguém percebe | Uma marca de sucesso só é gravada se **todas** as etapas derem certo. O Zabbix lê a idade dela e alerta. |
 | Backup que nunca foi restaurado | `backup-restore-test.sh` restaura os dumps do último snapshot e confere cada um. |
+| Na hora do aperto, ninguém lembra a sintaxe do `restic restore` | `backup-restaurar.sh` pergunta o que restaurar, restaura numa pasta separada e mostra o comando para colocar no lugar. |
 | Servidor invadido apaga o próprio backup | Recomendação: um bucket e um token por servidor, com escopo só naquele bucket. |
 | O armazenamento corrompe em silêncio | Verificação semanal com `restic check --read-data-subset=10%`, sobre uma amostra diferente a cada vez. |
 | O servidor roda em UTC e o horário "03:00" vira meia-noite | Os timers do systemd usam o sufixo `UTC` explícito. |
@@ -32,6 +33,8 @@ bin/backup-dumps.sh          dumps consistentes (sqlite, mysql, postgres)
 bin/backup-run.sh            ciclo: dumps -> restic backup -> retenção -> marca de sucesso
 bin/backup-check.sh          verificação do repositório
 bin/backup-restore-test.sh   restaura e confere os dumps do último snapshot
+bin/backup-restaurar.sh      assistente de restauração (snapshot, o quê, para onde)
+bin/backup-lib.sh            funções compartilhadas (conferência dos dumps)
 bin/backup-notify.sh         aviso pelo Telegram (falha, volta ao normal, teste)
 systemd/                     timers diário (backup) e semanal (verificação)
 zabbix/backup-restic.conf    itens backup.restic.age e backup.restic.check.age
@@ -111,6 +114,82 @@ Veja: tail -50 /var/log/backup-restic.log
 
 ## Restaurar
 
+Restauração costuma acontecer com pressa: o banco corrompeu, alguém apagou uma pasta, o cliente está esperando. É a pior hora para lembrar a sintaxe do `restic restore`. Por isso o kit traz um assistente:
+
+```bash
+sudo backup-restaurar.sh
+```
+
+Ele faz três perguntas (qual snapshot, o que restaurar e para onde), mostra um resumo e só restaura depois do "s":
+
+```
+O que restaurar do snapshot 3f9a1c2e?
+   1) Um dump de banco de dados (de /var/backups/restic-dumps)
+   2) Um arquivo ou uma pasta
+   3) O snapshot inteiro
+Número [1]: 1
+Qual dump?
+   1) mysql-erp.sql.gz
+   2) sqlite-app1.sqlite3
+Número [1]: 2
+Pasta de destino [/var/tmp/restaurado-3f9a1c2e-20261023-091512]:
+
+Resumo:
+  snapshot  3f9a1c2e
+  restaurar o dump sqlite-app1.sqlite3
+  destino   /var/tmp/restaurado-3f9a1c2e-20261023-091512  (os originais não são tocados)
+Restaurar agora? (s/N): s
+
+Restaurado: 1 arquivo(s) em /var/tmp/restaurado-3f9a1c2e-20261023-091512
+Conferindo os dumps restaurados:
+  ok     sqlite-app1.sqlite3
+
+Como colocar sqlite-app1.sqlite3 no lugar:
+  1. Pare o aplicativo que usa o banco.
+  2. Guarde o atual:   mv '/opt/app1/db.sqlite3' '/opt/app1/db.sqlite3.antes-da-restauracao'
+     Se existirem '/opt/app1/db.sqlite3-wal' e '/opt/app1/db.sqlite3-shm', mova-os também:
+     um WAL antigo aplicado sobre o banco restaurado o corrompe.
+  3. Coloque o antigo: cp '/var/tmp/restaurado-.../var/backups/restic-dumps/sqlite-app1.sqlite3' '/opt/app1/db.sqlite3'
+  4. Suba o aplicativo e confira.
+```
+
+Para MySQL e PostgreSQL, o comando sugerido primeiro restaura num banco **novo** (`erp_producao_restaurado`), para conferir antes de substituir o de produção. Para arquivos e pastas, sugere `diff` e `rsync --dry-run`.
+
+Cada pergunta pode ser pulada com uma opção, o que serve para documentação de procedimento e automação:
+
+```bash
+sudo backup-restaurar.sh --listar                                  # snapshots disponíveis
+sudo backup-restaurar.sh -s latest -d sqlite-app1.sqlite3 -y       # um dump, sem perguntas
+sudo backup-restaurar.sh -s 3f9a1c2e -c /etc/nginx -D /root/nginx-antigo
+sudo backup-restaurar.sh -t -y                                     # snapshot inteiro, destino padrão
+```
+
+| Opção | O que faz |
+|---|---|
+| `-s`, `--snapshot ID` | snapshot (`latest` = o mais recente; os 8 primeiros caracteres do ID bastam) |
+| `-d`, `--dump ARQUIVO` | só esse dump de `DUMP_DIR` |
+| `-c`, `--caminho CAMINHO` | só esse arquivo ou pasta (caminho original, absoluto) |
+| `-t`, `--tudo` | o snapshot inteiro |
+| `-D`, `--destino PASTA` | destino vazio ou inexistente (padrão: `/var/tmp/restaurado-<snapshot>-<data>`, mude com `RESTAURAR_EM` no `backup.env`) |
+| `-y`, `--sim` | sem confirmação; aceita o snapshot mais recente e o destino padrão |
+
+Códigos de saída: `0` ok, `1` falha na restauração ou dump com problema, `2` uso ou configuração inválida, `4` cancelado.
+
+**Decisões de projeto, e por quê:**
+
+| Decisão | Motivo |
+|---|---|
+| Nunca restaura por cima do original | O restic grava em `<destino>/<caminho original>`. Com destino `/`, ele sobrescreveria o servidor ao vivo. O assistente recusa `/` e deixa a troca para o administrador, que sabe se o app está parado. |
+| O destino precisa estar vazio | Restaurar numa pasta com arquivos mistura o antigo com o que já estava lá, e ninguém sabe mais o que veio do backup. |
+| Pasta de destino com permissão 700 | Um dump tem todos os dados do sistema. Em `/var/tmp`, sem isso, qualquer usuário do servidor poderia ler. |
+| Confere o dump depois de restaurar | Um dump corrompido descoberto **depois** de substituir o banco de produção é um segundo incidente. O assistente usa a mesma conferência do `backup-restore-test.sh`. |
+| Banco novo antes do de produção | `zcat dump \| mysql banco` apaga as tabelas atuais. Restaurar primeiro em `banco_restaurado` permite comparar e escolher. |
+| O ID do snapshot só aceita `latest` ou hexadecimal | Um texto como `--help` não chega ao restic como se fosse uma opção. |
+| Pergunta sem resposta encerra com erro | Rodando por pipe ou cron, o script nunca segue com um valor que ninguém escolheu. |
+| Cada restauração vai para o log | Fica registrado quem restaurou o quê, de qual snapshot e para onde. |
+
+Se preferir o restic direto:
+
 ```bash
 set -a; . /etc/backup-restic/backup.env; set +a
 restic snapshots
@@ -129,6 +208,7 @@ restic restore latest --target /tmp/restaurado --include /opt/app1
 - que **banco ausente ou corrompido não vira sucesso**, sem apagar o dump bom anterior;
 - a trava contra execução dupla;
 - os itens do Zabbix;
+- a **restauração assistida**: modo interativo com respostas pela entrada padrão, as opções `--dump`, `--caminho` e `--tudo`, as proteções do destino e do snapshot, e um dump corrompido detectado depois de restaurar;
 - o **aviso pelo Telegram**, contra um servidor falso local ([`tests/telegram_falso.py`](tests/telegram_falso.py)): falha, volta ao normal, `NOTIFY_ON`, Telegram fora do ar e o token fora do log.
 
 O GitHub Actions roda os testes e o ShellCheck a cada push.
@@ -152,6 +232,6 @@ A backup kit for Linux servers. It takes consistent database dumps (SQLite `.bac
 
 Optional **Telegram** alerts are sent when any step fails and once when backups recover (`NOTIFY_ON=falha|sempre|desligado`). The bot token is passed to `curl` through stdin, so it never shows up in `ps`, and a Telegram outage never breaks the backup.
 
-A failed dump never overwrites the last good one, and never counts as success. `backup-restore-test.sh` proves that your backup actually restores. Fully tested in CI against a local repository.
+A failed dump never overwrites the last good one, and never counts as success. `backup-restore-test.sh` proves that your backup actually restores, and `backup-restaurar.sh` is an interactive restore wizard (snapshot, what, where) that always restores into a separate, empty, root-only folder, checks the restored dumps and prints the exact commands to put them back (testing in a new database first). Fully tested in CI against a local repository.
 
 Licensed under [MIT](LICENSE).
