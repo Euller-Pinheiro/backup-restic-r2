@@ -3,7 +3,8 @@
 #
 # Pergunta, passo a passo, QUAL snapshot, O QUE restaurar (um dump de banco,
 # um arquivo ou pasta, ou o snapshot inteiro) e PARA ONDE. Restaura sempre numa
-# pasta separada, nunca por cima do original, e confere os dumps restaurados.
+# pasta separada, nunca por cima do original, confere os dumps restaurados e
+# mostra o comando para colocar cada coisa no lugar.
 #
 #   sudo backup-restaurar.sh                      # assistente interativo
 #   sudo backup-restaurar.sh --listar             # só lista os snapshots
@@ -39,7 +40,7 @@ Sem opções, pergunta tudo. Cada opção dada pula a pergunta correspondente.
   -h, --ajuda            mostra esta ajuda
 
 Nunca restaura por cima dos arquivos originais: o resultado fica em
-<destino>/<caminho original>.
+<destino>/<caminho original>, e o script mostra como colocar no lugar.
 
 Saída: 0 ok | 1 falha na restauração ou dump com problema | 2 uso ou
 configuração inválida | 4 cancelado
@@ -76,6 +77,7 @@ set -a
 set +a
 : "${RESTIC_REPOSITORY:?defina RESTIC_REPOSITORY em $ENV_FILE}"
 DUMP_DIR="${DUMP_DIR:-/var/backups/restic-dumps}"
+DUMPS_CONF="${DUMPS_CONF:-$CONF_DIR/dumps.conf}"
 LOG_FILE="${LOG_FILE:-/var/log/backup-restic.log}"
 RESTAURAR_EM="${RESTAURAR_EM:-/var/tmp}"
 RESTIC="${RESTIC:-restic}"
@@ -155,6 +157,64 @@ dumps_no_snapshot() {
     "$RESTIC" ls "$1" "$DUMP_DIR" 2>/dev/null | tail -n +2 \
         | awk -v d="$DUMP_DIR/" 'index($0, d) == 1 { n = substr($0, length(d) + 1); if (n !~ /\//) print n }' \
         | grep -E '\.(sqlite3|sql\.gz|dump)$'
+}
+
+# ------------------------------------------------------------ dicas finais
+# origem_do_dump <tipo> <nome> -> 3ª coluna da linha de dumps.conf (arquivo do
+# SQLite ou nome do banco), para mostrar o comando exato de volta.
+origem_do_dump() {
+    [[ -r "$DUMPS_CONF" ]] || return 1
+    awk -v t="$1" -v n="$2" '$1 == t && $2 == n { print $3; exit }' "$DUMPS_CONF"
+}
+
+dica_dump() {
+    local arquivo="$1" nome tipo base origem
+    nome="$(basename "$arquivo")"
+    case "$nome" in
+        sqlite-*.sqlite3) tipo=sqlite;   base="${nome#sqlite-}";   base="${base%.sqlite3}" ;;
+        mysql-*.sql.gz)   tipo=mysql;    base="${nome#mysql-}";    base="${base%.sql.gz}" ;;
+        postgres-*.dump)  tipo=postgres; base="${nome#postgres-}"; base="${base%.dump}" ;;
+        *) return 0 ;;
+    esac
+    origem="$(origem_do_dump "$tipo" "$base")"
+    echo
+    echo "Como colocar $nome no lugar:"
+    case "$tipo" in
+        sqlite)
+            origem="${origem:-<arquivo original do banco>}"
+            echo "  1. Pare o aplicativo que usa o banco."
+            echo "  2. Guarde o atual:   mv '$origem' '$origem.antes-da-restauracao'"
+            echo "     Se existirem '$origem-wal' e '$origem-shm', mova-os também:"
+            echo "     um WAL antigo aplicado sobre o banco restaurado o corrompe."
+            echo "  3. Coloque o antigo: cp '$arquivo' '$origem'"
+            echo "  4. Suba o aplicativo e confira." ;;
+        mysql)
+            origem="${origem:-<banco>}"
+            echo "  Teste antes num banco novo, sem tocar no de produção:"
+            echo "    mysql -e 'CREATE DATABASE ${origem}_restaurado'"
+            echo "    zcat '$arquivo' | mysql ${origem}_restaurado"
+            echo "  Para substituir o de produção (apaga as tabelas atuais):"
+            echo "    zcat '$arquivo' | mysql $origem" ;;
+        postgres)
+            origem="${origem:-<banco>}"
+            echo "  Teste antes num banco novo, sem tocar no de produção:"
+            echo "    createdb ${origem}_restaurado && pg_restore -d ${origem}_restaurado '$arquivo'"
+            echo "  Para substituir o de produção (recria os objetos):"
+            echo "    pg_restore --clean --if-exists -d $origem '$arquivo'" ;;
+    esac
+}
+
+dica_arquivos() {
+    local restaurado="$1" original="$2"
+    echo
+    echo "Para comparar com o que está no servidor agora:"
+    echo "  diff -r '$original' '$restaurado' | head"
+    echo "Para colocar no lugar (veja antes o que mudaria com --dry-run):"
+    if [[ -d "$restaurado" ]]; then
+        echo "  rsync -a --dry-run -v '$restaurado/' '$original/'"
+    else
+        echo "  rsync -a --dry-run -v '$restaurado' '$original'"
+    fi
 }
 
 # ============================================================== principal
@@ -288,6 +348,17 @@ if (( ${#dumps_restaurados[@]} > 0 )); then
         (( rc == 1 )) && resultado="$SAI_FALHA"
     done
 fi
+
+# 7) Como colocar no lugar
+case "$modo" in
+    dump)    dica_dump "$destino$incluir" ;;
+    caminho) dica_arquivos "$destino$incluir" "$incluir" ;;
+    tudo)
+        echo
+        echo "Cada arquivo está em $destino<caminho original>."
+        echo "Para recuperar uma pasta, compare e copie com rsync, por exemplo:"
+        echo "  rsync -a --dry-run -v '$destino/etc/' /etc/" ;;
+esac
 
 if (( resultado == SAI_OK )); then
     log "OK: snapshot $snap_id -> $destino ($n_arquivos arquivos)"
