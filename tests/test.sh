@@ -178,6 +178,63 @@ cp "$T/backup.env.sem-aviso" "$CONF/backup.env"
 env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID backup-notify.sh falha "x"; rc=$?
 ok "sem configuração não envia nada (0)"   '[[ $rc -eq 0 && $(pedidos) -eq $m ]]'
 
+echo "10. Restauração assistida (backup-restaurar.sh)"
+backup-restaurar.sh --listar </dev/null > "$T/listar.out" 2>&1; rc=$?
+ok "--listar mostra os snapshots"          '[[ $rc -eq 0 ]] && grep -q "snapshots" "$T/listar.out"'
+ultimo_id="$(restic snapshots --json --latest 1 --tag auto 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)[-1]["short_id"])')"
+
+# Interativo: as respostas chegam pela entrada padrão, uma por linha
+# (Enter = mais recente; 1 = um dump; 1 = primeiro dump; destino; s = confirma)
+printf '\n1\n1\n%s\ns\n' "$T/rest-int" | backup-restaurar.sh > "$T/int.out" 2> "$T/int.err"; rc=$?
+ok "interativo restaura o dump escolhido"  '[[ $rc -eq 0 && -f $T/rest-int$T/dumps/mysql-erp.sql.gz ]]'
+ok "interativo restaura só esse dump"      '[[ $(find $T/rest-int -type f | wc -l) -eq 1 ]]'
+ok "dump restaurado é conferido"           'grep -q "ok     mysql-erp.sql.gz" "$T/int.out"'
+ok "mostra o comando de volta (banco certo)" 'grep -q "mysql erp_producao_restaurado" "$T/int.out"'
+ok "pasta de destino só para o dono (700)" '[[ $(stat -c %a $T/rest-int) == 700 ]]'
+
+printf '\n1\n1\n%s\nn\n' "$T/rest-cancel" | backup-restaurar.sh >/dev/null 2>&1; rc=$?
+ok "responder não cancela sem restaurar"   '[[ $rc -eq 4 && ! -e $T/rest-cancel ]]'
+printf '\n9\n2\n' | backup-restaurar.sh >/dev/null 2>"$T/inv.err"; rc=$?
+ok "número fora da lista pergunta de novo" 'grep -q "Escolha um número de 1 a 3" "$T/inv.err"'
+ok "fim das respostas sai com 2"           '[[ $rc -eq 2 ]]'
+
+# Por opções, sem perguntas
+backup-restaurar.sh -s "$ultimo_id" -d sqlite-app1.sqlite3 -D "$T/rest-op" -y </dev/null > "$T/op.out" 2>/dev/null; rc=$?
+ok "por opções restaura o dump SQLite"     '[[ $rc -eq 0 && $(sqlite3 $T/rest-op$T/dumps/sqlite-app1.sqlite3 "SELECT count(*) FROM t") -eq 5 ]]'
+ok "dica do SQLite aponta o arquivo original" 'grep -qF "$T/app/app1.sqlite3" "$T/op.out"'
+backup-restaurar.sh -c "$T/app/dados/" -D "$T/rest-cam" -y </dev/null > "$T/cam.out" 2>/dev/null; rc=$?
+ok "--caminho restaura a pasta pedida"     '[[ $rc -eq 0 ]] && diff -q $T/app/dados/config.txt $T/rest-cam$T/app/dados/config.txt >/dev/null'
+ok "--caminho não traz os dumps junto"     '[[ ! -e $T/rest-cam$T/dumps ]]'
+backup-restaurar.sh -t -D "$T/rest-tudo" -y </dev/null > "$T/tudo.out" 2>/dev/null; rc=$?
+ok "--tudo restaura e confere os 3 dumps"  '[[ $rc -eq 0 && -f $T/rest-tudo$T/app/dados/config.txt ]] && [[ $(grep -c "^  ok " "$T/tudo.out") -eq 3 ]]'
+
+# Proteções
+backup-restaurar.sh -t -D / -y </dev/null >/dev/null 2>&1; rc=$?
+ok "destino / é recusado"                  '[[ $rc -eq 2 ]]'
+backup-restaurar.sh -t -D "$T/rest-op" -y </dev/null >/dev/null 2>&1; rc=$?
+ok "destino com conteúdo é recusado"       '[[ $rc -eq 2 ]]'
+backup-restaurar.sh -s abcd1234 -t -D "$T/rest-x" -y </dev/null >/dev/null 2>&1; rc=$?
+ok "snapshot inexistente -> 1"             '[[ $rc -eq 1 && ! -e $T/rest-x ]]'
+backup-restaurar.sh -s "--help" -t -y </dev/null >/dev/null 2>&1; rc=$?
+ok "snapshot com texto de opção é recusado" '[[ $rc -eq 2 ]]'
+backup-restaurar.sh -d nao-existe.dump -D "$T/rest-x" -y </dev/null >/dev/null 2>&1; rc=$?
+ok "dump que não está no snapshot -> 1"    '[[ $rc -eq 1 && ! -e $T/rest-x ]]'
+backup-restaurar.sh -c "$T/app/nada" -D "$T/rest-x" -y </dev/null >/dev/null 2>&1; rc=$?
+ok "caminho que não está no snapshot -> 1" '[[ $rc -eq 1 && ! -e $T/rest-x ]]'
+backup-restaurar.sh -c "relativo/x" -y </dev/null >/dev/null 2>&1; rc=$?
+ok "caminho relativo é recusado"           '[[ $rc -eq 2 ]]'
+backup-restaurar.sh -d x -t </dev/null >/dev/null 2>&1; rc=$?
+ok "--dump com --tudo é recusado"          '[[ $rc -eq 2 ]]'
+backup-restaurar.sh --opcao-que-nao-existe </dev/null >/dev/null 2>&1; rc=$?
+ok "opção desconhecida sai com 2"          '[[ $rc -eq 2 ]]'
+ok "restaurações ficam registradas no log" 'grep -q "\[restaurar\] OK: snapshot" "$T/backup.log"'
+
+# Um dump corrompido dentro do backup precisa aparecer como falha
+echo "lixo" > "$T/dumps/mysql-erp.sql.gz"
+restic backup --tag auto "$T/dumps" >/dev/null 2>&1
+backup-restaurar.sh -d mysql-erp.sql.gz -D "$T/rest-ruim" -y </dev/null > "$T/ruim.out" 2>/dev/null; rc=$?
+ok "dump corrompido no snapshot -> 1"      '[[ $rc -eq 1 ]] && grep -q "FALHA  mysql-erp.sql.gz" "$T/ruim.out"'
+
 echo
 if (( falhas > 0 )); then echo "$falhas verificação(ões) falharam"; exit 1; fi
 echo "Todos os testes passaram."
